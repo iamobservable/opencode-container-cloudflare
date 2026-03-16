@@ -33,6 +33,44 @@ validate_env() {
     fi
 }
 
+validate_api_token() {
+    echo "Validating Cloudflare API token..."
+    
+    local response
+    response=$(curl -s -X GET \
+        -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+        "https://api.cloudflare.com/client/v4/user/tokens/verify")
+    
+    local status
+    status=$(echo "$response" | jq -r '.success' 2>/dev/null)
+    
+    if [ "$status" != "true" ]; then
+        local error_code error_message
+        error_code=$(echo "$response" | jq -r '.errors[0].code // "unknown"' 2>/dev/null)
+        error_message=$(echo "$response" | jq -r '.errors[0].message // "Unknown error"' 2>/dev/null)
+        
+        echo "Error: Cloudflare API token is invalid or lacks required permissions"
+        echo "  Code: $error_code"
+        echo "  Message: $error_message"
+        echo ""
+        echo "Please ensure your API token has the following permissions:"
+        echo "  - Account > Zero Trust > Access: Apps and Policies (Edit)"
+        echo "  - Account > Cloudflare Tunnel > Edit"
+        echo "  - Zone > DNS > Edit"
+        echo ""
+        echo "Create a token at: https://dash.cloudflare.com/profile/api-tokens"
+        exit 1
+    fi
+    
+    local token_id token_name
+    token_id=$(echo "$response" | jq -r '.result.id // "N/A"' 2>/dev/null)
+    token_name=$(echo "$response" | jq -r '.result.name // "N/A"' 2>/dev/null)
+    
+    echo "API token validated successfully"
+    echo "  Token: $token_name (ID: $token_id)"
+    echo ""
+}
+
 api_call() {
     local method="$1"
     local endpoint="$2"
@@ -181,6 +219,7 @@ main() {
     
     load_env
     validate_env
+    validate_api_token
     
     echo "Configuration:"
     echo "  Domain: $CLOUDFLARE_DOMAIN"
