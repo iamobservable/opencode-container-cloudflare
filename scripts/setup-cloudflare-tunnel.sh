@@ -207,6 +207,44 @@ create_dns_record() {
     log "DNS record created successfully"
 }
 
+configure_tunnel_ingress() {
+    local tunnel_id="$1"
+    local hostname="${OPENCODE_SUBDOMAIN}.${CLOUDFLARE_DOMAIN}"
+    
+    log "Configuring tunnel ingress rules..."
+    
+    local config_json
+    config_json=$(cat <<EOF
+{
+    "config": {
+        "ingress": [
+            {
+                "hostname": "$hostname",
+                "service": "http://opencode:4000",
+                "originRequest": {
+                    "noTLSVerify": true
+                }
+            },
+            {
+                "service": "http_status:404"
+            }
+        ]
+    }
+}
+EOF
+)
+    
+    local response
+    response=$(api_call PUT "/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel/$tunnel_id/configurations" "$config_json")
+    
+    if ! check_api_response "$response" "configure tunnel ingress"; then
+        log "Warning: Failed to configure tunnel ingress"
+        return 1
+    fi
+    
+    log "Tunnel ingress configured successfully"
+}
+
 enable_otp_identity_provider() {
     local response
     
@@ -419,25 +457,29 @@ main() {
     create_dns_record "$tunnel_id"
     log ""
     
+    log "Step 4: Configuring tunnel ingress..."
+    configure_tunnel_ingress "$tunnel_id"
+    log ""
+    
     if [ -n "$CLOUDFLARE_ALLOWED_EMAILS" ]; then
         local app_id
         
-        log "Step 4: Enabling OTP identity provider..."
+        log "Step 5: Enabling OTP identity provider..."
         enable_otp_identity_provider
         log ""
         
-        log "Step 5: Creating Access application..."
+        log "Step 6: Creating Access application..."
         app_id=$(create_access_application)
         
         if [ -n "$app_id" ] && [ "$app_id" != "null" ]; then
-            log "Step 6: Creating Access policy..."
+            log "Step 7: Creating Access policy..."
             create_access_policy "$app_id"
         fi
         log ""
     fi
     
     if [ -z "$tunnel_token" ]; then
-        log "Step 7: Retrieving tunnel token..."
+        log "Step 8: Retrieving tunnel token..."
         tunnel_token=$(get_tunnel_token "$tunnel_id")
         
         if [ -z "$tunnel_token" ] || [ "$tunnel_token" == "null" ]; then
