@@ -1,0 +1,37 @@
+services:
+  opencode:
+    build:
+      context: ./opencode
+      dockerfile: Dockerfile
+    container_name: opencode
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    env_file:
+      - ./env/opencode.env
+    volumes:
+      - opencode_config:/root/.config/opencode
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    env_file:
+      - ./env/cloudflared.env
+    command: tunnel --no-autoupdate run
+    depends_on:
+      opencode:
+        condition: service_healthy
+
+volumes:
+  opencode_config:
+    name: opencode_config
+  ollama_models:
+    name: ollama_models
