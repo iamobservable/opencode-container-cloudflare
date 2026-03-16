@@ -266,6 +266,18 @@ create_access_policy() {
         return 1
     fi
     
+    local existing_policies
+    existing_policies=$(api_call GET "/zones/$CLOUDFLARE_ZONE_ID/access/apps/$app_id/policies")
+    
+    local max_precedence
+    max_precedence=$(echo "$existing_policies" | jq -r '.result | map(.precedence) | max // 0' 2>/dev/null)
+    
+    if [ -z "$max_precedence" ] || [ "$max_precedence" == "null" ]; then
+        max_precedence=0
+    fi
+    
+    local next_precedence=$((max_precedence + 1))
+    
     local include_rules=""
     local first=true
     
@@ -283,9 +295,9 @@ create_access_policy() {
         done
     done <<< "$CLOUDFLARE_ALLOWED_EMAILS"
     
-    local json_payload="{\"name\":\"Allowed Emails\",\"decision\":\"allow\",\"include\":[$include_rules],\"precedence\":1,\"app_uid\":\"$app_uid\"}"
+    local json_payload="{\"name\":\"Allowed Emails\",\"decision\":\"allow\",\"include\":[$include_rules],\"precedence\":$next_precedence,\"app_uid\":\"$app_uid\"}"
     
-    log "Creating policy..."
+    log "Creating policy with precedence $next_precedence..."
     
     local response
     response=$(api_call POST "/zones/$CLOUDFLARE_ZONE_ID/access/apps/$app_id/policies" "$json_payload")
