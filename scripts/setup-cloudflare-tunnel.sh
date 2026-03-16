@@ -4,10 +4,14 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/../env/cloudflare-setup.env"
 
+log() {
+    echo "$@" >&2
+}
+
 load_env() {
     if [ ! -f "$ENV_FILE" ]; then
-        echo "Error: $ENV_FILE not found"
-        echo "Copy env/cloudflare-setup.env.example to env/cloudflare-setup.env and fill in your values"
+        log "Error: $ENV_FILE not found"
+        log "Copy env/cloudflare-setup.env.example to env/cloudflare-setup.env and fill in your values"
         exit 1
     fi
     
@@ -27,14 +31,14 @@ validate_env() {
     [ -z "$CLOUDFLARE_TUNNEL_NAME" ] && missing+=("CLOUDFLARE_TUNNEL_NAME")
     
     if [ ${#missing[@]} -gt 0 ]; then
-        echo "Error: Missing required environment variables:"
-        printf '  - %s\n' "${missing[@]}"
+        log "Error: Missing required environment variables:"
+        printf '  - %s\n' "${missing[@]}" >&2
         exit 1
     fi
 }
 
 validate_api_token() {
-    echo "Validating Cloudflare API token..."
+    log "Validating Cloudflare API token..."
     
     local response
     response=$(curl -s -X GET \
@@ -49,16 +53,16 @@ validate_api_token() {
         error_code=$(echo "$response" | jq -r '.errors[0].code // "unknown"' 2>/dev/null)
         error_message=$(echo "$response" | jq -r '.errors[0].message // "Unknown error"' 2>/dev/null)
         
-        echo "Error: Cloudflare API token is invalid or lacks required permissions"
-        echo "  Code: $error_code"
-        echo "  Message: $error_message"
-        echo ""
-        echo "Please ensure your API token has the following permissions:"
-        echo "  - Account > Zero Trust > Access: Apps and Policies (Edit)"
-        echo "  - Account > Cloudflare Tunnel > Edit"
-        echo "  - Zone > DNS > Edit"
-        echo ""
-        echo "Create a token at: https://dash.cloudflare.com/profile/api-tokens"
+        log "Error: Cloudflare API token is invalid or lacks required permissions"
+        log "  Code: $error_code"
+        log "  Message: $error_message"
+        log ""
+        log "Please ensure your API token has the following permissions:"
+        log "  - Account > Zero Trust > Access: Apps and Policies (Edit)"
+        log "  - Account > Cloudflare Tunnel > Edit"
+        log "  - Zone > DNS > Edit"
+        log ""
+        log "Create a token at: https://dash.cloudflare.com/profile/api-tokens"
         exit 1
     fi
     
@@ -66,9 +70,9 @@ validate_api_token() {
     token_id=$(echo "$response" | jq -r '.result.id // "N/A"' 2>/dev/null)
     token_name=$(echo "$response" | jq -r '.result.name // "N/A"' 2>/dev/null)
     
-    echo "API token validated successfully"
-    echo "  Token: $token_name (ID: $token_id)"
-    echo ""
+    log "API token validated successfully"
+    log "  Token: $token_name (ID: $token_id)"
+    log ""
 }
 
 api_call() {
@@ -85,40 +89,90 @@ api_call() {
     curl "${args[@]}" "https://api.cloudflare.com/client/v4$endpoint"
 }
 
+check_api_response() {
+    local response="$1"
+    local context="$2"
+    
+    local success
+    success=$(echo "$response" | jq -r '.success' 2>/dev/null)
+    
+    if [ "$success" != "true" ]; then
+        log "Error: API call failed - $context"
+        log "Response: $response"
+        local errors
+        errors=$(echo "$response" | jq -r '.errors[] | "  - \(.code): \(.message)"' 2>/dev/null)
+        if [ -n "$errors" ]; then
+            log "Errors:"
+            log "$errors"
+        fi
+        return 1
+    fi
+    return 0
+}
+
 get_tunnel() {
-    api_call GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/cfn_tunnel" | \
-        jq -r --arg name "$CLOUDFLARE_TUNNEL_NAME" \
-        '.result[] | select(.name == $name) | .id' 2>/dev/null || echo ""
+    local response
+    response=$(api_call GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/cfn_tunnel")
+    
+    if ! check_api_response "$response" "list tunnels"; then
+        return 1
+    fi
+    
+    echo "$response" | jq -r --arg name "$CLOUDFLARE_TUNNEL_NAME" \
+        '.result[] | select(.name == $name) | .id' 2>/dev/null | head -1
 }
 
 create_tunnel() {
-    local tunnel_id="$1"
+    local existing_id="$1"
     
-    if [ -n "$tunnel_id" ]; then
-        echo "Using existing tunnel: $tunnel_id"
-        echo "$tunnel_id"
+    if [ -n "$existing_id" ] && [ "$existing_id" != "null" ] && [ "$existing_id" != "" ]; then
+        log "Using existing tunnel: $existing_id"
+        echo "$existing_id"
         return 0
     fi
     
-    echo "Creating new tunnel: $CLOUDFLARE_TUNNEL_NAME"
+    log "Creating new tunnel: $CLOUDFLARE_TUNNEL_NAME"
     
     local response
     response=$(api_call POST "/accounts/$CLOUDFLARE_ACCOUNT_ID/cfn_tunnel" \
         "{\"name\":\"$CLOUDFLARE_TUNNEL_NAME\",\"config_src\":\"cloudflare\"}")
     
-    echo "$response" | jq -r '.result.id'
+    if ! check_api_response "$response" "create tunnel"; then
+        return 1
+    fi
+    
+    local tunnel_id
+    tunnel_id=$(echo "$response" | jq -r '.result.id' 2>/dev/null)
+    
+    if [ -z "$tunnel_id" ] || [ "$tunnel_id" == "null" ]; then
+        log "Error: Failed to extract tunnel ID from response"
+        log "Response: $response"
+        return 1
+    fi
+    
+    echo "$tunnel_id"
 }
 
 get_tunnel_token() {
     local tunnel_id="$1"
-    api_call GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/cfn_tunnel/$tunnel_id/token" | \
-        jq -r '.result' 2>/dev/null
+    
+    local response
+    response=$(api_call GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/cfn_tunnel/$tunnel_id/token")
+    
+    if ! check_api_response "$response" "get tunnel token"; then
+        return 1
+    fi
+    
+    echo "$response" | jq -r '.result' 2>/dev/null
 }
 
 get_dns_record() {
     local hostname="$1"
-    api_call GET "/zones/$CLOUDFLARE_ZONE_ID/dns_records?name=$hostname" | \
-        jq -r '.result[0].id' 2>/dev/null || echo ""
+    
+    local response
+    response=$(api_call GET "/zones/$CLOUDFLARE_ZONE_ID/dns_records?name=$hostname")
+    
+    echo "$response" | jq -r '.result[0].id' 2>/dev/null | head -1
 }
 
 create_dns_record() {
@@ -128,66 +182,104 @@ create_dns_record() {
     local existing_record
     existing_record=$(get_dns_record "$hostname")
     
-    if [ -n "$existing_record" ]; then
-        echo "DNS record already exists for $hostname"
+    if [ -n "$existing_record" ] && [ "$existing_record" != "null" ]; then
+        log "DNS record already exists for $hostname"
         return 0
     fi
     
-    echo "Creating DNS record for $hostname"
+    log "Creating DNS record for $hostname"
     
-    api_call POST "/zones/$CLOUDFLARE_ZONE_ID/dns_records" \
-        "{\"type\":\"CNAME\",\"name\":\"$OPENCODE_SUBDOMAIN\",\"content\":\"${tunnel_id}.cfargotunnel.com\",\"ttl\":3600,\"proxied\":true}" \
-        > /dev/null
+    local response
+    response=$(api_call POST "/zones/$CLOUDFLARE_ZONE_ID/dns_records" \
+        "{\"type\":\"CNAME\",\"name\":\"$OPENCODE_SUBDOMAIN\",\"content\":\"${tunnel_id}.cfargotunnel.com\",\"ttl\":3600,\"proxied\":true}")
+    
+    if ! check_api_response "$response" "create DNS record"; then
+        return 1
+    fi
+    
+    log "DNS record created successfully"
 }
 
 create_access_application() {
     local hostname="${OPENCODE_SUBDOMAIN}.${CLOUDFLARE_DOMAIN}"
     
-    local existing_app
-    existing_app=$(api_call GET "/zones/$CLOUDFLARE_ZONE_ID/access/apps" | \
-        jq -r --arg domain "$hostname" '.result[] | select(.domain == $domain) | .id' 2>/dev/null || echo "")
+    local response
+    response=$(api_call GET "/zones/$CLOUDFLARE_ZONE_ID/access/apps")
     
-    if [ -n "$existing_app" ]; then
-        echo "Access application already exists: $existing_app"
+    if ! check_api_response "$response" "list access apps"; then
+        log "Warning: Could not check existing access applications"
+    fi
+    
+    local existing_app
+    existing_app=$(echo "$response" | jq -r --arg domain "$hostname" \
+        '.result[] | select(.domain == $domain) | .id' 2>/dev/null | head -1)
+    
+    if [ -n "$existing_app" ] && [ "$existing_app" != "null" ]; then
+        log "Access application already exists: $existing_app"
         echo "$existing_app"
         return 0
     fi
     
-    echo "Creating Access application for $hostname"
+    log "Creating Access application for $hostname"
     
-    api_call POST "/zones/$CLOUDFLARE_ZONE_ID/access/apps" \
-        "{\"name\":\"OpenCode\",\"domain\":\"$hostname\",\"type\":\"self_hosted\"}" | \
-        jq -r '.result.id'
+    response=$(api_call POST "/zones/$CLOUDFLARE_ZONE_ID/access/apps" \
+        "{\"name\":\"OpenCode\",\"domain\":\"$hostname\",\"type\":\"self_hosted\"}")
+    
+    if ! check_api_response "$response" "create access application"; then
+        log "Warning: Access application creation failed, continuing without Access"
+        return 1
+    fi
+    
+    local app_id
+    app_id=$(echo "$response" | jq -r '.result.id' 2>/dev/null)
+    
+    if [ -z "$app_id" ] || [ "$app_id" == "null" ]; then
+        log "Warning: Could not extract app ID"
+        return 1
+    fi
+    
+    echo "$app_id"
 }
 
 create_access_policy() {
     local app_id="$1"
     
     if [ -z "$CLOUDFLARE_ALLOWED_EMAILS" ] || [ -z "$app_id" ]; then
-        echo "Skipping Access policy (no emails configured or app ID missing)"
+        log "Skipping Access policy (no emails configured or app ID missing)"
         return 0
     fi
     
-    echo "Creating Access policy for allowed emails"
+    log "Creating Access policy for allowed emails"
+    
+    local response
+    response=$(api_call GET "/zones/$CLOUDFLARE_ZONE_ID/access/apps/$app_id")
+    
+    if ! check_api_response "$response" "get access app details"; then
+        log "Warning: Could not get app details for policy creation"
+        return 1
+    fi
+    
+    local app_uid
+    app_uid=$(echo "$response" | jq -r '.result.uid' 2>/dev/null)
+    
+    if [ -z "$app_uid" ] || [ "$app_uid" == "null" ]; then
+        log "Warning: Could not get app UID for policy creation"
+        return 1
+    fi
     
     local emails_json
     emails_json=$(echo "$CLOUDFLARE_ALLOWED_EMAILS" | tr ',' '\n' | \
         jq -R -s 'split("\n") | map(select(length > 0)) | {email: .}')
     
-    local app_uid
-    app_uid=$(api_call GET "/zones/$CLOUDFLARE_ZONE_ID/access/apps/$app_id" | \
-        jq -r '.result.uid')
+    response=$(api_call POST "/zones/$CLOUDFLARE_ZONE_ID/access/apps/$app_id/policies" \
+        "{\"name\":\"Allowed Emails\",\"decision\":\"allow\",\"include\":[$emails_json],\"precedence\":1,\"app_uid\":\"$app_uid\"}")
     
-    if [ -z "$app_uid" ]; then
-        echo "Warning: Could not get app UID for policy creation"
-        return 0
+    if ! check_api_response "$response" "create access policy"; then
+        log "Warning: Access policy creation failed"
+        return 1
     fi
     
-    api_call POST "/zones/$CLOUDFLARE_ZONE_ID/access/apps/$app_id/policies" \
-        "{\"name\":\"Allowed Emails\",\"decision\":\"allow\",\"include\":[$emails_json],\"precedence\":1,\"app_uid\":\"$app_uid\"}" \
-        > /dev/null
-    
-    echo "Access policy created successfully"
+    log "Access policy created successfully"
 }
 
 save_tunnel_token() {
@@ -195,7 +287,7 @@ save_tunnel_token() {
     local output_file="$SCRIPT_DIR/../env/cloudflared.env"
     
     if [ -f "$output_file" ]; then
-        echo "Updating existing $output_file"
+        log "Updating existing $output_file"
         if grep -q "^CLOUDFLARE_TUNNEL_TOKEN=" "$output_file"; then
             sed -i.bak "s|^CLOUDFLARE_TUNNEL_TOKEN=.*|CLOUDFLARE_TUNNEL_TOKEN=$token|" "$output_file"
             rm -f "${output_file}.bak"
@@ -203,7 +295,7 @@ save_tunnel_token() {
             echo "CLOUDFLARE_TUNNEL_TOKEN=$token" >> "$output_file"
         fi
     else
-        echo "Creating $output_file"
+        log "Creating $output_file"
         cat > "$output_file" <<EOF
 # Cloudflare Tunnel Configuration
 # Generated by setup script
@@ -214,74 +306,86 @@ EOF
 }
 
 main() {
-    echo "=== Cloudflare Tunnel Setup Script ==="
-    echo ""
+    log "=== Cloudflare Tunnel Setup Script ==="
+    log ""
     
     load_env
     validate_env
     validate_api_token
     
-    echo "Configuration:"
-    echo "  Domain: $CLOUDFLARE_DOMAIN"
-    echo "  Subdomain: $OPENCODE_SUBDOMAIN"
-    echo "  Tunnel: $CLOUDFLARE_TUNNEL_NAME"
-    echo "  Zone ID: $CLOUDFLARE_ZONE_ID"
-    echo "  Account ID: $CLOUDFLARE_ACCOUNT_ID"
-    echo ""
+    log "Configuration:"
+    log "  Domain: $CLOUDFLARE_DOMAIN"
+    log "  Subdomain: $OPENCODE_SUBDOMAIN"
+    log "  Tunnel: $CLOUDFLARE_TUNNEL_NAME"
+    log "  Zone ID: $CLOUDFLARE_ZONE_ID"
+    log "  Account ID: $CLOUDFLARE_ACCOUNT_ID"
+    log ""
     
-    echo "Step 1: Checking for existing tunnel..."
+    local tunnel_id
+    
+    log "Step 1: Checking for existing tunnel..."
     tunnel_id=$(get_tunnel)
     
-    echo "Step 2: Creating tunnel..."
+    if [ -n "$tunnel_id" ] && [ "$tunnel_id" != "null" ]; then
+        log "Found existing tunnel: $tunnel_id"
+    else
+        log "No existing tunnel found"
+    fi
+    log ""
+    
+    log "Step 2: Creating tunnel..."
     tunnel_id=$(create_tunnel "$tunnel_id")
     
     if [ -z "$tunnel_id" ] || [ "$tunnel_id" == "null" ]; then
-        echo "Error: Failed to create or retrieve tunnel"
+        log "Error: Failed to create or retrieve tunnel"
         exit 1
     fi
     
-    echo "Tunnel ID: $tunnel_id"
-    echo ""
+    log "Tunnel ID: $tunnel_id"
+    log ""
     
-    echo "Step 3: Creating DNS record..."
+    log "Step 3: Creating DNS record..."
     create_dns_record "$tunnel_id"
-    echo ""
+    log ""
     
     if [ -n "$CLOUDFLARE_ALLOWED_EMAILS" ]; then
-        echo "Step 4: Creating Access application..."
+        local app_id
+        
+        log "Step 4: Creating Access application..."
         app_id=$(create_access_application)
         
         if [ -n "$app_id" ] && [ "$app_id" != "null" ]; then
-            echo "Step 5: Creating Access policy..."
+            log "Step 5: Creating Access policy..."
             create_access_policy "$app_id"
         fi
-        echo ""
+        log ""
     fi
     
-    echo "Step: Retrieving tunnel token..."
+    log "Step 6: Retrieving tunnel token..."
+    local token
     token=$(get_tunnel_token "$tunnel_id")
     
     if [ -z "$token" ] || [ "$token" == "null" ]; then
-        echo "Error: Failed to retrieve tunnel token"
+        log "Error: Failed to retrieve tunnel token"
         exit 1
     fi
     
-    echo ""
-    echo "=== Setup Complete ==="
-    echo ""
-    echo "Your tunnel token:"
-    echo "$token"
-    echo ""
+    log ""
+    log "=== Setup Complete ==="
+    log ""
+    log "Your tunnel token:"
+    log "$token"
     
     save_tunnel_token "$token"
     
-    echo "Tunnel token saved to env/cloudflared.env"
-    echo ""
-    echo "Next steps:"
-    echo "  1. Review env/opencode.env and configure your Ollama Cloud API key"
-    echo "  2. Run: docker compose up -d"
-    echo "  3. Visit: https://${OPENCODE_SUBDOMAIN}.${CLOUDFLARE_DOMAIN}"
-    echo ""
+    log ""
+    log "Tunnel token saved to env/cloudflared.env"
+    log ""
+    log "Next steps:"
+    log "  1. Review env/opencode.env and configure your Ollama Cloud API key"
+    log "  2. Run: docker compose up -d"
+    log "  3. Visit: https://${OPENCODE_SUBDOMAIN}.${CLOUDFLARE_DOMAIN}"
+    log ""
 }
 
 main "$@"
