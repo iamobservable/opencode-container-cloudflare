@@ -66,4 +66,4 @@ for i in {1..30}; do
 done
 
 echo "Starting OpenCode web server..."
-exec opencode web --hostname 0.0.0.0 --port 4000
+exec /root/.opencode/bin/opencode web --hostname 0.0.0.0 --port 4000
