@@ -207,6 +207,36 @@ create_dns_record() {
     log "DNS record created successfully"
 }
 
+enable_otp_identity_provider() {
+    local response
+    
+    response=$(api_call GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/access/identityProviders")
+    
+    if ! check_api_response "$response" "list identity providers"; then
+        log "Warning: Could not check existing identity providers"
+    fi
+    
+    local existing_otp
+    existing_otp=$(echo "$response" | jq -r '.result[] | select(.type == "onetimepin") | .id' 2>/dev/null | head -1)
+    
+    if [ -n "$existing_otp" ] && [ "$existing_otp" != "null" ]; then
+        log "OTP identity provider already enabled: $existing_otp"
+        return 0
+    fi
+    
+    log "Enabling OTP identity provider..."
+    
+    response=$(api_call POST "/accounts/$CLOUDFLARE_ACCOUNT_ID/access/identityProviders" \
+        "{\"type\":\"onetimepin\",\"name\":\"One-Time PIN\",\"config\":{}}")
+    
+    if ! check_api_response "$response" "enable OTP identity provider"; then
+        log "Warning: Failed to enable OTP identity provider"
+        return 1
+    fi
+    
+    log "OTP identity provider enabled successfully"
+}
+
 create_access_application() {
     local hostname="${OPENCODE_SUBDOMAIN}.${CLOUDFLARE_DOMAIN}"
     
@@ -387,18 +417,22 @@ main() {
     if [ -n "$CLOUDFLARE_ALLOWED_EMAILS" ]; then
         local app_id
         
-        log "Step 4: Creating Access application..."
+        log "Step 4: Enabling OTP identity provider..."
+        enable_otp_identity_provider
+        log ""
+        
+        log "Step 5: Creating Access application..."
         app_id=$(create_access_application)
         
         if [ -n "$app_id" ] && [ "$app_id" != "null" ]; then
-            log "Step 5: Creating Access policy..."
+            log "Step 6: Creating Access policy..."
             create_access_policy "$app_id"
         fi
         log ""
     fi
     
     if [ -z "$tunnel_token" ]; then
-        log "Step 6: Retrieving tunnel token..."
+        log "Step 7: Retrieving tunnel token..."
         tunnel_token=$(get_tunnel_token "$tunnel_id")
         
         if [ -z "$tunnel_token" ] || [ "$tunnel_token" == "null" ]; then
