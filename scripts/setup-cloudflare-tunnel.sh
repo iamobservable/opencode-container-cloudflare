@@ -210,10 +210,13 @@ create_dns_record() {
 enable_otp_identity_provider() {
     local response
     
-    response=$(api_call GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/access/identityProviders")
+    response=$(api_call GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/access/identity_providers")
     
     if ! check_api_response "$response" "list identity providers"; then
         log "Warning: Could not check existing identity providers"
+        log "You may need to enable OTP manually in Cloudflare One dashboard"
+        log "https://one.dash.cloudflare.com/ -> Settings -> Authentication"
+        return 0
     fi
     
     local existing_otp
@@ -226,12 +229,14 @@ enable_otp_identity_provider() {
     
     log "Enabling OTP identity provider..."
     
-    response=$(api_call POST "/accounts/$CLOUDFLARE_ACCOUNT_ID/access/identityProviders" \
+    response=$(api_call POST "/accounts/$CLOUDFLARE_ACCOUNT_ID/access/identity_providers" \
         "{\"type\":\"onetimepin\",\"name\":\"One-Time PIN\",\"config\":{}}")
     
     if ! check_api_response "$response" "enable OTP identity provider"; then
         log "Warning: Failed to enable OTP identity provider"
-        return 1
+        log "Please enable OTP manually in Cloudflare One dashboard:"
+        log "https://one.dash.cloudflare.com/ -> Settings -> Authentication -> Add new -> One-Time PIN"
+        return 0
     fi
     
     log "OTP identity provider enabled successfully"
