@@ -56,7 +56,7 @@ Docker Compose deployment for OpenCode web interface with Ollama Cloud, exposed 
 ### cloudflared.env
 | Variable | Description |
 |----------|-------------|
-| `CLOUDFLARE_TUNNEL_TOKEN` | Cloudflare Tunnel token |
+| `TUNNEL_TOKEN` | Cloudflare Tunnel token |
 
 ## Cloudflare Access
 
